@@ -1,0 +1,6 @@
+node_modules
+dist
+dist-ssr
+.env
+.netlify
+.claude/settings.local.json
