@@ -1200,13 +1200,9 @@ function ZoneMap({ activeZone }) {
     >
       {/* Sea background */}
       <rect x={0} y={0} width={VW} height={VH} fill="#0c1524" />
-      {/* Zone highlight rectangle */}
-      <rect x={x1} y={y1} width={Math.max(2, x2 - x1)} height={Math.max(2, y2 - y1)}
-        fill="rgba(251,191,36,0.18)" stroke="#f59e0b" strokeWidth={1.5} />
-      {/* Central meridian dashed line */}
-      <line x1={cmX} y1={0} x2={cmX} y2={VH}
-        stroke="#f59e0b" strokeWidth={1} strokeDasharray="5 3" opacity={0.65} />
-      {/* Island silhouettes */}
+      {/* Island silhouettes — drawn BEFORE the zone highlight so the highlight
+          (translucent fill + stroke) renders on top and stays visible over land
+          instead of being hidden underneath the islands' opaque fill. */}
       {Object.entries(PH_ISLANDS).map(([name, coords]) => (
         <polygon key={name} points={islandPoints(coords)}
           fill="#334155" stroke="#64748b" strokeWidth={0.7}
@@ -1221,6 +1217,13 @@ function ZoneMap({ activeZone }) {
       {/* Batanes (northernmost) small dots */}
       <circle cx={Math.round(geoToSVG(121.97,20.45)[0])} cy={Math.round(geoToSVG(121.97,20.45)[1])} r={3}
         fill="#334155" stroke="#64748b" strokeWidth={0.7} />
+      {/* Zone highlight rectangle — on top, so its translucent fill tints the
+          land within its true bounds instead of being masked by it. */}
+      <rect x={x1} y={y1} width={Math.max(2, x2 - x1)} height={Math.max(2, y2 - y1)}
+        fill="rgba(251,191,36,0.28)" stroke="#f59e0b" strokeWidth={1.5} />
+      {/* Central meridian dashed line */}
+      <line x1={cmX} y1={0} x2={cmX} y2={VH}
+        stroke="#f59e0b" strokeWidth={1} strokeDasharray="5 3" opacity={0.85} />
     </svg>
   );
 }
