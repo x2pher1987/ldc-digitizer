@@ -149,6 +149,23 @@ function computeTraverse(corners) {
   return { lines, M40, AA40, AB40, LEC, REC, ACC, doubleArea, area, centroid };
 }
 
+// Robust coordinate parser: extracts the FIRST valid signed decimal number
+// from a string, ignoring anything after it. Plain Number(v) returns NaN for
+// a value like "1312936.88.52" — a real OCR artifact where a correction mark
+// or stray digit near a cell gets concatenated onto the base reading, giving
+// two decimal points. Number() rejecting the whole string silently drops that
+// corner from every computation (traverse, AutoCAD points, KML) and — because
+// the corner table displays computed lines by raw array position — shifts
+// every row after it out of alignment, most visibly breaking the LAST
+// corner's bearing/distance. Tolerating the artifact here (rather than only
+// in the extraction prompt) means a bad read never corrupts unrelated rows.
+function parseCoord(v) {
+  if (typeof v === 'number') return v;
+  if (typeof v !== 'string') return NaN;
+  const m = v.trim().match(/^-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : NaN;
+}
+
 function trimNum(v) {
   if (typeof v !== 'number' || !isFinite(v)) return String(v);
   // keep up to 3 decimals, drop trailing zeros, matching how the sheet's
@@ -560,7 +577,7 @@ Extract EVERY numbered corner row, in the exact order they appear top to bottom.
 Respond with ONLY compact JSON, no markdown fences, no explanation, matching exactly this shape:
 {"corners":[[cornerNo, northing, easting, "bearingText", distance, "cornerDesc"], ...]}
 Rules:
-- northing, easting come from the LOT CORNER COORDINATES columns, as plain decimal numbers.
+- northing, easting come from the LOT CORNER COORDINATES columns, as plain decimal numbers — EXACTLY ONE decimal point each, e.g. 1312936.88, never 1312936.88.52. If a cell has a small handwritten correction mark or superscript digit near it (common on these carbon copies), that correction REPLACES the digit(s) it's correcting — it is a different reading of the SAME number, never a second value to append after it. Decide which reading is correct (the correction, if the original was struck through; otherwise the printed value) and output ONE clean number, not both concatenated.
 - bearingText comes from the LOT BOUNDARY LINE "BEARING" column, normalized EXACTLY like "S85-07W" or "N24-01W": compass letter, degrees, hyphen, minutes, compass letter, no spaces, no degree symbols. If unreadable, use "".
 - distance comes from the LOT BOUNDARY LINE "DISTANCE" column as a plain decimal number. If unreadable, use null.
 - cornerDesc is the CORNER DESC. column text (e.g. "OLD COR", "PS MON"), or "" if blank.
@@ -875,9 +892,9 @@ function CornerTable({ corners, setCorners, result, tiePoint, setTiePoint, onAdd
   // same way boundary lines are, but it is NOT part of the polygon — including it
   // would corrupt the area, so it is computed separately here.
   const tieLine = useMemo(() => {
-    const tn = Number(tiePoint?.n), te = Number(tiePoint?.e);
+    const tn = parseCoord(tiePoint?.n), te = parseCoord(tiePoint?.e);
     const c1 = corners[0];
-    const cn = Number(c1?.n), ce = Number(c1?.e);
+    const cn = parseCoord(c1?.n), ce = parseCoord(c1?.e);
     if (![tn, te, cn, ce].every(Number.isFinite)) return null;
     return computeLine({ n: tn, e: te }, { n: cn, e: ce });
   }, [tiePoint?.n, tiePoint?.e, corners[0]?.n, corners[0]?.e]);
@@ -890,15 +907,15 @@ function CornerTable({ corners, setCorners, result, tiePoint, setTiePoint, onAdd
   // on TP-1 AND four separate corner rows) showed the failure isn't confined to
   // the tie point — it can hit any row, and often hits several on the same scan.
   const allNorthings = useMemo(
-    () => [Number(tiePoint?.n), ...corners.map((c) => Number(c.n))].filter(Number.isFinite),
+    () => [parseCoord(tiePoint?.n), ...corners.map((c) => parseCoord(c.n))].filter(Number.isFinite),
     [tiePoint?.n, corners]
   );
   const allEastings = useMemo(
-    () => [Number(tiePoint?.e), ...corners.map((c) => Number(c.e))].filter(Number.isFinite),
+    () => [parseCoord(tiePoint?.e), ...corners.map((c) => parseCoord(c.e))].filter(Number.isFinite),
     [tiePoint?.e, corners]
   );
   const cornerWarn = (row) => {
-    const n = Number(row?.n), e = Number(row?.e);
+    const n = parseCoord(row?.n), e = parseCoord(row?.e);
     const nWarn = digitMisreadWarn(n, allNorthings.filter((v) => v !== n));
     const eWarn = digitMisreadWarn(e, allEastings.filter((v) => v !== e));
     return {
@@ -1265,7 +1282,7 @@ function EarthOutput({ result, corners, header, zone, setZone, municipality, bar
     try {
       setConversionError(null);
       return corners
-        .map((c) => ({ n: Number(c.n), e: Number(c.e) }))
+        .map((c) => ({ n: parseCoord(c.n), e: parseCoord(c.e) }))
         .filter((c) => Number.isFinite(c.n) && Number.isFinite(c.e))
         .map((c) => gridToWGS84(c.e, c.n, zone));
     } catch (e) {
@@ -1775,12 +1792,18 @@ export default function LDCDigitizer() {
   const [section, setSection] = useState('');
   const [loadedKey, setLoadedKey] = useState(null); // storage key of the record currently being edited, if any
 
-  const numericCorners = useMemo(
-    () => corners
-      .map((c) => ({ n: Number(c.n), e: Number(c.e) }))
-      .filter((c) => Number.isFinite(c.n) && Number.isFinite(c.e)),
-    [corners]
-  );
+  // Every corner must parse cleanly before computing anything — NOT filtered
+  // down to just the valid ones. The corner table displays computed lines by
+  // raw array position (result.lines[i] paired with corners[i]); silently
+  // dropping one bad row would shrink result.lines relative to corners and
+  // misalign every row from that point on, which is exactly what broke the
+  // last corner's bearing/distance in practice (see parseCoord's comment for
+  // the real case this came from). Requiring full validity keeps that
+  // invariant — result.lines.length === corners.length — always true.
+  const numericCorners = useMemo(() => {
+    const parsed = corners.map((c) => ({ n: parseCoord(c.n), e: parseCoord(c.e) }));
+    return parsed.every((c) => Number.isFinite(c.n) && Number.isFinite(c.e)) ? parsed : [];
+  }, [corners]);
   const result = useMemo(
     () => (numericCorners.length >= 3 ? computeTraverse(numericCorners) : null),
     [numericCorners]
@@ -1980,7 +2003,9 @@ export default function LDCDigitizer() {
               </div>
             ) : (
               <div className="rounded-sm border border-slate-700 bg-slate-900 p-5 text-sm text-slate-400">
-                Enter at least 3 corners with Northing and Easting to compute the boundary.
+                {corners.length >= 3
+                  ? "One or more corners has a Northing/Easting that isn't a valid number (check for stray characters or an extra decimal point) — fix it to compute the boundary."
+                  : 'Enter at least 3 corners with Northing and Easting to compute the boundary.'}
               </div>
             )}
           </>
