@@ -5,6 +5,7 @@ import {
   Compass, Ruler, MapPin, FileText, Paperclip, Download, Globe2, FolderOpen, ChevronsUpDown,
   BookOpen, ChevronRight, Save, Type,
 } from 'lucide-react';
+import { PH_PATH_D } from './phPath.js';
 
 /* ============================================================================
    LOCAL RUNTIME SHIM
@@ -1139,89 +1140,63 @@ function APOutput({ result }) {
   );
 }
 
-/* ---- ZoneMap: proper multi-island Philippines silhouette + zone coverage ---- */
-const ZONE_EXTENTS = {
-  'PRS92-1':  [116.04,  6.21, 118.00, 18.64],
-  'PRS92-2':  [118.00,  3.02, 120.07, 20.42],
-  'PRS92-3':  [119.70,  3.00, 122.21, 21.62],
-  'PRS92-4':  [121.74,  3.44, 124.29, 22.18],
-  'PRS92-5':  [123.73,  4.76, 126.65, 21.97],
-  'LUZON-I':  [116.04,  6.21, 118.00, 18.64],
-  'LUZON-II': [118.00,  3.02, 120.07, 20.42],
-  'LUZON-III':[119.70,  3.00, 122.21, 21.62],
-  'LUZON-IV': [121.74,  3.44, 124.29, 22.18],
-  'LUZON-V':  [123.73,  4.76, 126.65, 21.97],
+/* ---- ZoneMap: accurate Philippines silhouette + zone coverage ---- */
+// Each PTM/UTM-style zone is a ±1.5° band around its central meridian — a
+// vertical strip spanning the full map height, not a lat-bounded EPSG area-
+// of-use box (that distinction only matters for the actual coordinate
+// conversion in gridToWGS84 above, which is untouched by this preview).
+const ZONE_LON_BOUNDS = {
+  'PRS92-1':  [115.5, 118.5],
+  'PRS92-2':  [117.5, 120.5],
+  'PRS92-3':  [119.5, 122.5],
+  'PRS92-4':  [121.5, 124.5],
+  'PRS92-5':  [123.5, 126.5],
+  'LUZON-I':  [115.5, 118.5],
+  'LUZON-II': [117.5, 120.5],
+  'LUZON-III':[119.5, 122.5],
+  'LUZON-IV': [121.5, 124.5],
+  'LUZON-V':  [123.5, 126.5],
 };
-// Viewport: lon 115-128, lat 2-22.5 → 260×420 SVG units
-const GEO = { minLon: 115, maxLon: 128, minLat: 2, maxLat: 22.5 };
-const VW = 260, VH = 420;
+// Viewport: lon 116.0-127.0E, lat 4.5-21.5N → 277×440 SVG units. VW is derived
+// (not hand-picked) from the archipelago's mean latitude so 1° of longitude
+// and 1° of latitude cover the same true ground distance — see
+// .scripts/build-ph-path.mjs, which projects PH_PATH_D with this exact formula.
+const GEO = { minLon: 116.0, maxLon: 127.0, minLat: 4.5, maxLat: 21.5 };
+const VW = 277, VH = 440;
 function geoToSVG(lon, lat) {
   const x = ((lon - GEO.minLon) / (GEO.maxLon - GEO.minLon)) * VW;
   const y = ((GEO.maxLat - lat) / (GEO.maxLat - GEO.minLat)) * VH;
   return [x, y];
 }
-// Simplified coastline data for each major island group, traced from real outlines
-// at thumbnail scale — enough to read as the actual shape of the Philippines.
-const PH_ISLANDS = {
-  luzon: [[121.97,20.45],[122.35,18.40],[122.10,17.60],[122.20,16.80],[122.10,16.00],[121.50,15.80],[121.60,15.00],[121.80,14.80],[121.50,14.30],[121.20,14.00],[120.80,14.00],[120.30,13.80],[120.00,14.20],[119.80,14.50],[120.10,14.90],[120.00,15.50],[119.80,16.20],[120.00,17.00],[120.20,17.80],[120.40,18.20],[120.70,18.50],[121.30,18.80],[121.60,19.60],[121.90,20.00]],
-  mindanao: [[122.05,7.00],[122.30,7.60],[122.80,7.80],[123.30,7.40],[124.00,7.80],[124.50,7.60],[125.30,7.40],[126.00,7.50],[126.60,8.00],[126.60,8.70],[125.90,8.80],[126.10,9.40],[125.70,9.70],[125.30,9.60],[125.50,8.80],[125.10,8.60],[124.50,8.80],[124.00,8.80],[123.50,8.60],[123.00,8.30],[122.80,8.00],[122.50,7.80],[122.20,7.50],[122.00,7.20],[122.00,6.90]],
-  samarLeyte: [[124.10,12.00],[124.50,11.80],[125.00,11.60],[125.20,11.20],[125.00,10.80],[124.80,10.50],[125.00,10.20],[125.30,9.80],[124.80,9.60],[124.30,9.70],[123.80,10.00],[123.30,10.40],[123.50,11.20],[124.00,11.60]],
-  cebuBohol: [[124.00,10.60],[124.30,10.40],[124.30,10.00],[124.00,9.70],[123.70,9.80],[123.40,10.10],[123.60,10.40]],
-  negros: [[122.60,11.00],[122.80,10.80],[123.20,10.60],[123.40,10.20],[123.20,9.80],[122.90,9.60],[122.70,9.80],[122.50,10.00],[122.40,10.40]],
-  panay: [[121.80,11.80],[122.20,11.60],[122.60,11.20],[122.30,10.80],[122.00,10.50],[121.60,10.60],[121.40,11.00],[121.60,11.50]],
-  palawan: [[120.10,11.60],[119.70,11.20],[119.40,10.80],[119.20,10.20],[119.00,9.80],[118.80,9.50],[118.50,9.20],[118.30,8.90],[117.90,8.50],[117.70,8.10],[117.50,8.30],[117.80,8.70],[118.10,9.00],[118.40,9.50],[118.70,9.90],[119.10,10.40],[119.50,10.80],[119.80,11.30]],
-  mindoro: [[121.00,13.50],[121.30,13.20],[121.60,12.80],[121.50,12.40],[121.20,12.20],[120.80,12.20],[120.60,12.60],[120.80,13.10]],
-  sulu: [[120.50,6.10],[121.00,6.00],[121.50,6.00],[122.00,6.20],[122.00,6.50],[121.50,6.40],[121.00,6.30],[120.50,6.40]],
-  basilan: [[121.90,6.55],[122.30,6.45],[122.50,6.65],[122.20,6.80],[121.90,6.75]],
-};
-// Convert a list of [lon,lat] pairs to an SVG points string
-function islandPoints(coords) {
-  return coords.map(([lon, lat]) => {
-    const [x, y] = geoToSVG(lon, lat);
-    return `${Math.round(x)},${Math.round(y)}`;
-  }).join(' ');
-}
 
 function ZoneMap({ activeZone }) {
-  const ext = ZONE_EXTENTS[activeZone];
-  if (!ext) return null;
-  const [x1, y1] = geoToSVG(ext[0], ext[3]); // minLon, maxLat → top-left
-  const [x2, y2] = geoToSVG(ext[2], ext[1]); // maxLon, minLat → bottom-right
+  const bounds = ZONE_LON_BOUNDS[activeZone];
+  if (!bounds) return null;
+  const [x1] = geoToSVG(bounds[0], 0);
+  const [x2] = geoToSVG(bounds[1], 0);
   const cmZone = PH_ZONES[activeZone];
   const [cmX] = geoToSVG(cmZone?.cm ?? 120, 12);
   return (
     <svg
       viewBox={`0 0 ${VW} ${VH}`}
-      width={130}
-      height={210}
-      className="rounded-sm border border-slate-600"
-      style={{ background: '#0c1524' }}
+      width={160}
+      height={254}
+      className="rounded-sm"
+      style={{ background: '#080f1e', border: '1px solid #1e293b' }}
       aria-label={`Zone coverage map — ${cmZone?.label ?? activeZone}`}
     >
       {/* Sea background */}
-      <rect x={0} y={0} width={VW} height={VH} fill="#0c1524" />
-      {/* Island silhouettes — drawn BEFORE the zone highlight so the highlight
+      <rect x={0} y={0} width={VW} height={VH} fill="#080f1e" />
+      {/* Philippines landmass — drawn BEFORE the zone highlight so the highlight
           (translucent fill + stroke) renders on top and stays visible over land
-          instead of being hidden underneath the islands' opaque fill. */}
-      {Object.entries(PH_ISLANDS).map(([name, coords]) => (
-        <polygon key={name} points={islandPoints(coords)}
-          fill="#334155" stroke="#64748b" strokeWidth={0.7}
-          strokeLinejoin="round" />
-      ))}
-      {/* BOHOL separate small blob */}
-      <circle cx={Math.round(geoToSVG(124.15,9.85)[0])} cy={Math.round(geoToSVG(124.15,9.85)[1])} r={4}
-        fill="#334155" stroke="#64748b" strokeWidth={0.7} />
-      {/* Masbate small blob */}
-      <circle cx={Math.round(geoToSVG(123.60,12.20)[0])} cy={Math.round(geoToSVG(123.60,12.20)[1])} r={3}
-        fill="#334155" stroke="#64748b" strokeWidth={0.7} />
-      {/* Batanes (northernmost) small dots */}
-      <circle cx={Math.round(geoToSVG(121.97,20.45)[0])} cy={Math.round(geoToSVG(121.97,20.45)[1])} r={3}
-        fill="#334155" stroke="#64748b" strokeWidth={0.7} />
-      {/* Zone highlight rectangle — on top, so its translucent fill tints the
-          land within its true bounds instead of being masked by it. */}
-      <rect x={x1} y={y1} width={Math.max(2, x2 - x1)} height={Math.max(2, y2 - y1)}
-        fill="rgba(251,191,36,0.28)" stroke="#f59e0b" strokeWidth={1.5} />
-      {/* Central meridian dashed line */}
+          instead of being hidden underneath the land's opaque fill. */}
+      <path d={PH_PATH_D} fill="#1e293b" stroke="#475569" strokeWidth={0.5} strokeLinejoin="round" />
+      {/* Zone highlight strip — on top, so its translucent fill tints the land
+          within its true bounds instead of being masked by it. Full height,
+          matching the ±1.5°-around-CM band it represents. */}
+      <rect x={x1} y={0} width={Math.max(2, x2 - x1)} height={VH}
+        fill="rgba(245,158,11,0.15)" stroke="#f59e0b" strokeWidth={1} />
+      {/* Central meridian dashed centerline */}
       <line x1={cmX} y1={0} x2={cmX} y2={VH}
         stroke="#f59e0b" strokeWidth={1} strokeDasharray="5 3" opacity={0.85} />
     </svg>
