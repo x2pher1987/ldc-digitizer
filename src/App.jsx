@@ -415,7 +415,7 @@ function fmt(n, d = 2) {
    IMAGE HANDLING
    ========================================================================== */
 
-function resizeImageFile(file, maxDim = 2000, quality = 0.92) {
+function resizeImageFile(file, maxDim = 2400, quality = 0.95) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Could not read the file.'));
@@ -455,7 +455,7 @@ function stripFences(s) {
   return s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
 }
 
-async function callClaudeVision(prompt, base64, mediaType, retries = 2) {
+async function callClaudeVision(prompt, base64, mediaType, { retries = 2, maxTokens = 1000 } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -464,7 +464,11 @@ async function callClaudeVision(prompt, base64, mediaType, retries = 2) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'claude-sonnet-4-5',
-          max_tokens: 1000,
+          max_tokens: maxTokens,
+          // Deterministic reads for a task with one correct answer per field —
+          // temperature 0 measurably reduces digit-swap variance versus the
+          // default (1) on repeated reads of the same faint/ambiguous text.
+          temperature: 0,
           messages: [{
             role: 'user',
             content: [
@@ -560,21 +564,27 @@ function repairCornersJSON(raw) {
 }
 
 async function runExtraction(base64, mediaType) {
-  // Run header first, then corners sequentially — so a transient failure on one
-  // doesn't mask the other, and the real API error reaches the user.
-  let headerRaw;
-  try {
-    headerRaw = await callClaudeVision(HEADER_PROMPT, base64, mediaType);
-  } catch (e) {
-    throw new Error(`Header extraction failed: ${e.message}`);
-  }
+  // Header and corners run IN PARALLEL — they're independent reads of the same
+  // image, so there's no reason to wait for one before starting the other. Each
+  // keeps its own try/catch via allSettled, so a failure on one still surfaces
+  // its own specific error message instead of being masked by the other.
+  // Corners gets a much larger token budget: a long corner table (many-cornered
+  // lots run 20-30+ rows) can otherwise hit the cap mid-row, forcing the
+  // last-row-trimmed repair fallback — cheap to avoid since max_tokens is just
+  // a ceiling, not a cost.
+  const [headerResult, cornersResult] = await Promise.allSettled([
+    callClaudeVision(HEADER_PROMPT, base64, mediaType, { maxTokens: 1000 }),
+    callClaudeVision(CORNERS_PROMPT, base64, mediaType, { maxTokens: 4000 }),
+  ]);
 
-  let cornersRaw;
-  try {
-    cornersRaw = await callClaudeVision(CORNERS_PROMPT, base64, mediaType);
-  } catch (e) {
-    throw new Error(`Corner table extraction failed: ${e.message}`);
+  if (headerResult.status === 'rejected') {
+    throw new Error(`Header extraction failed: ${headerResult.reason.message}`);
   }
+  if (cornersResult.status === 'rejected') {
+    throw new Error(`Corner table extraction failed: ${cornersResult.reason.message}`);
+  }
+  const headerRaw = headerResult.value;
+  const cornersRaw = cornersResult.value;
 
   let headerJson;
   try {
@@ -1657,7 +1667,7 @@ export default function LDCDigitizer() {
     try {
       const { base64, mediaType, dataUrl } = await resizeImageFile(file);
       setImageDataUrl(dataUrl);
-      setExtractStepMsg('Reading header fields (lot no., owner, tie point)…');
+      setExtractStepMsg('Reading header fields and corner table…');
       const { header: h, corners: c, repaired } = await runExtraction(base64, mediaType);
       setExtractStepMsg('Done.');
       setHeader({
@@ -1699,7 +1709,7 @@ export default function LDCDigitizer() {
     setAddSheetError(null);
     try {
       const { base64, mediaType } = await resizeImageFile(file);
-      const cornersRaw = await callClaudeVision(CORNERS_PROMPT, base64, mediaType);
+      const cornersRaw = await callClaudeVision(CORNERS_PROMPT, base64, mediaType, { maxTokens: 4000 });
       let cornersJson;
       try { cornersJson = JSON.parse(stripFences(cornersRaw)); }
       catch (e) { cornersJson = repairCornersJSON(cornersRaw); }
