@@ -574,6 +574,7 @@ Respond with ONLY compact JSON, no markdown fences, no explanation, matching exa
 
 const CORNERS_PROMPT = `You are an expert geodetic engineer, cadastral data specialist, and optical character recognition (OCR) auditor reading the "LOT CORNER COORDINATES" and "LOT BOUNDARY LINE" columns of the corner table on a scanned Philippine Bureau of Lands "Lot Data Computation" form.
 Extract EVERY numbered corner row, in the exact order they appear top to bottom. Do NOT include the tie-point row (the one whose CORNER NO. reads "TP-1") — that row is handled separately.
+STRICTLY extract only valid boundary corner points — rows whose CORNER NO. is a real sequential number (1, 2, 3, ...) in the LOT CORNER COORDINATES table. Completely IGNORE and do not emit a row for: the "AREA = ... SQ. M." total line below the last corner (including any struck-through or handwritten-correction figures near it), trailing survey notes, signature/date lines, or any other text below the table — none of these are corners, and none should ever be mistaken for a 5th, 6th, or any extra corner just because a number appears near them.
 Respond with ONLY compact JSON, no markdown fences, no explanation, matching exactly this shape:
 {"corners":[[cornerNo, northing, easting, "bearingText", distance, "cornerDesc"], ...]}
 Rules:
@@ -599,6 +600,40 @@ function repairCornersJSON(raw) {
   if (lastGood === -1) throw new Error('No complete corner rows found.');
   const rows = JSON.parse('[' + body.slice(0, lastGood + 1) + ']');
   return { corners: rows };
+}
+
+// Code-level safety net, independent of the prompt above: even when instructed
+// not to, a model can still occasionally read the AREA total, a struck-through
+// correction figure, or a stray survey note as a phantom extra corner row. This
+// discards any row that doesn't look like a real boundary corner:
+//   - its CORNER NO. isn't a positive integer, or repeats one already kept
+//     (an AREA/notes row rarely carries a clean sequential number)
+//   - its Northing or Easting is far too small to be a real PH grid coordinate
+//     — these run in the hundreds of thousands to low millions on every sheet
+//     this app handles, while an area total (e.g. 220.27, 4738.79 sq.m) or a
+//     stray note number is almost always under this floor
+//   - its corner-description text names the AREA line itself (e.g. "SQ.M", "TOTAL")
+// Each row is evaluated independently, so one bad row can't cause a real corner
+// elsewhere in the table to be dropped.
+const MIN_PLAUSIBLE_COORD = 10000;
+function filterSpuriousCornerRows(rows) {
+  const seenNos = new Set();
+  return rows.filter((row) => {
+    const [cornerNo, northing, easting, , , cornerDesc] = row;
+    const descText = String(cornerDesc || '').toUpperCase();
+    if (/AREA|SQ\.?\s*M\.?|TOTAL/.test(descText)) return false;
+
+    const n = Number(northing), e = Number(easting);
+    const tooSmall = (v) => Number.isFinite(v) && v !== 0 && Math.abs(v) < MIN_PLAUSIBLE_COORD;
+    if (tooSmall(n) || tooSmall(e)) return false;
+
+    const no = Number(cornerNo);
+    if (!Number.isFinite(no) || no <= 0 || !Number.isInteger(no)) return false;
+    if (seenNos.has(no)) return false;
+    seenNos.add(no);
+
+    return true;
+  });
 }
 
 async function runExtraction(base64, mediaType) {
@@ -644,7 +679,7 @@ async function runExtraction(base64, mediaType) {
     }
   }
 
-  const corners = (cornersJson.corners || []).map((row) => ({
+  const corners = filterSpuriousCornerRows(cornersJson.corners || []).map((row) => ({
     n: row[1] ?? '', e: row[2] ?? '', bearingText: row[3] || '', distance: row[4] ?? '', cornerDesc: row[5] || '', override: null,
   }));
 
@@ -1863,7 +1898,7 @@ export default function LDCDigitizer() {
       let cornersJson;
       try { cornersJson = JSON.parse(stripFences(cornersRaw)); }
       catch (e) { cornersJson = repairCornersJSON(cornersRaw); }
-      const extra = (cornersJson.corners || []).map((row) => ({
+      const extra = filterSpuriousCornerRows(cornersJson.corners || []).map((row) => ({
         n: row[1] ?? '', e: row[2] ?? '', bearingText: row[3] || '', distance: row[4] ?? '', cornerDesc: row[5] || '', override: null,
       }));
       if (!extra.length) throw new Error('No corner rows found on that sheet.');
