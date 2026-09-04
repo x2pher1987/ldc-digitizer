@@ -3,7 +3,7 @@ import {
   UploadCloud, ScanLine, Loader2, CheckCircle2, XCircle, AlertTriangle,
   Copy, Check, X, ChevronDown, ChevronUp, Trash2, Plus, History, RotateCcw,
   Compass, Ruler, MapPin, FileText, Paperclip, Download, Globe2, FolderOpen, ChevronsUpDown,
-  BookOpen, ChevronRight, Save, Type,
+  BookOpen, ChevronRight, Save, Type, Upload,
 } from 'lucide-react';
 import { PH_PATH_D } from './phPath.js';
 
@@ -1443,6 +1443,59 @@ function SavePanel({ header, tiePoint, corners, zone, result, municipality, setM
     if (loadedKey === key) setLoadedKey(null);
   };
 
+  // Export/import the whole records database as JSON — not CSV, because each
+  // record carries nested, variable-length data (the nth-corner array, the
+  // header object, the tie point) that a flat table can't round-trip losslessly.
+  // This is also the only way to move records off this browser's localStorage,
+  // which is per-device by design (see the note in the app's records panel).
+  const importInputRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleExport = async () => {
+    const all = await listAllLotRecords();
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      app: 'LDC Digitizer',
+      version: 1,
+      records: all.map(({ key, ...rest }) => rest), // key is re-derived from barangay/section/lotNo on import
+    };
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadTextFile(JSON.stringify(payload, null, 2), `LDC_Records_Export_${stamp}.json`, 'application/json');
+  };
+
+  const handleImportFile = async (file) => {
+    setImporting(true);
+    showMsg(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const list = Array.isArray(parsed) ? parsed : parsed.records;
+      if (!Array.isArray(list)) throw new Error('not a records export');
+
+      let ok = 0, failed = 0;
+      for (const r of list) {
+        const bgy = (r.barangay || '').trim();
+        const sec = (r.section || '').trim();
+        if (!bgy || !sec || !r.header) { failed++; continue; }
+        const key = await saveLotRecord(bgy, sec, {
+          header: r.header, tiePoint: r.tiePoint, corners: r.corners || [],
+          zone: r.zone, municipality: (r.municipality || '').trim(),
+        }, null);
+        if (key) ok++; else failed++;
+      }
+      await refresh();
+      showMsg(
+        failed
+          ? { ok: ok > 0, text: `Imported ${ok}, skipped ${failed} (missing barangay/section/header).` }
+          : { ok: true, text: `Imported ${ok} record${ok === 1 ? '' : 's'}.` },
+        true
+      );
+    } catch (e) {
+      showMsg({ ok: false, text: 'Could not read that file — expected a JSON export from this app.' });
+    }
+    setImporting(false);
+  };
+
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortBy(col); setSortDir('asc'); }
@@ -1539,15 +1592,46 @@ function SavePanel({ header, tiePoint, corners, zone, result, municipality, setM
         Will save as <span className="font-mono text-slate-300">{stem}</span>
       </div>
 
-      {/* Records browser toggle */}
-      <button
-        onClick={() => { if (!showRecords) refresh(); setShowRecords((v) => !v); }}
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 transition-colors"
-      >
-        <BookOpen size={13} />
-        {showRecords ? 'Hide records' : `Browse records (${records.length} lots)`}
-        {showRecords ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-      </button>
+      {/* Records browser toggle + import/export */}
+      <div className="flex flex-wrap items-center gap-4">
+        <button
+          onClick={() => { if (!showRecords) refresh(); setShowRecords((v) => !v); }}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 transition-colors"
+        >
+          <BookOpen size={13} />
+          {showRecords ? 'Hide records' : `Browse records (${records.length} lots)`}
+          {showRecords ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        <span className="h-3 w-px bg-slate-700" />
+        <button
+          onClick={handleExport}
+          disabled={records.length === 0}
+          title="Download every saved lot as one JSON file"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 disabled:opacity-40 disabled:hover:text-slate-400 transition-colors"
+        >
+          <Download size={13} /> Export
+        </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files && e.target.files[0];
+            if (f) handleImportFile(f);
+            e.target.value = '';
+          }}
+        />
+        <button
+          onClick={() => importInputRef.current && importInputRef.current.click()}
+          disabled={importing}
+          title="Load lots from a JSON file exported by this app"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-cyan-400 disabled:opacity-40 transition-colors"
+        >
+          {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+          Import
+        </button>
+      </div>
 
       {showRecords && (
         <>
