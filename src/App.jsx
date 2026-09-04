@@ -406,6 +406,26 @@ function rowMatchStatus(line, cornerRow) {
   return true;
 }
 
+// Flags a coordinate that sits far outside the tight cluster the rest of a
+// sheet's Northings/Eastings occupy — the client-side half of the digit-misread
+// defense. A single-digit substitution in the second/third digit (9→3, 9→7, and
+// friends — see the extraction prompts) shifts a value by 10,000-60,000+, which
+// dwarfs the real spread of corners on one lot, so a leave-one-out median
+// comparison catches it independent of whether the AI's own prompt-level check
+// caught it. Used for every row (TP-1 and each corner), not just TP-1.
+function digitMisreadWarn(value, siblingValues) {
+  if (!Number.isFinite(value) || siblingValues.length < 2) return null;
+  const sorted = siblingValues.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const diff = Math.abs(value - median);
+  if (diff <= 5000) return null;
+  // Move toward the median by the misread digit's magnitude, keeping this row's
+  // own trailing digits rather than just returning the median outright —
+  // direction matters (a 9→3 undershoots, a 9→7 can under- or overshoot).
+  const suggested = Math.round((value < median ? value + diff : value - diff) * 1000) / 1000;
+  return { diff, median, suggested };
+}
+
 function fmt(n, d = 2) {
   if (n === null || n === undefined || !isFinite(n)) return '—';
   return Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -526,14 +546,14 @@ Respond with ONLY compact JSON, no markdown fences, no explanation, matching exa
 ### 2. Tie point row:
 - The tie point is the row whose CORNER NO. reads "TP-1" (its TRAVERSE STA. OCC. is usually "BLLM 1" or similar). It is the reference monument the survey ties to, NOT a lot corner.
 - "tieLabel" is the station name (e.g. "BLLM 1"); "tieN"/"tieE" are that row's LOT CORNER COORDINATES Northing/Easting; "tieBearing"/"tieDistance" are that row's LOT BOUNDARY LINE bearing and distance (the tie line running from the tie point to corner 1).
-- CRITICAL TIE POINT DIGIT CHECK: The TP-1 Easting is especially prone to 9→3 misreads because it sits alone above the numbered corners, making the clustering sanity check harder. Cross-check it this way: (a) ALL Easting values on the same form should agree in their first 5 significant digits (e.g. if corners read 599xxx, the TP-1 Easting must also start with 599, never 539 or 539). (b) Use the tieBearing and tieBearingDistance to independently verify: compute the expected Easting offset = tieDistance × sin(tieBearing) and check that the TP-1 Easting ± that offset lands on Corner 1's Easting within a few metres. If it does not, the TP-1 Easting likely contains a 9→3 substitution — re-read it.
+- CRITICAL TIE POINT DIGIT CHECK: The TP-1 Easting is especially prone to 9→3 AND 9→7 misreads because it sits alone above the numbered corners, making the clustering sanity check harder. Cross-check it this way: (a) ALL Easting values on the same form should agree in their first 5 significant digits (e.g. if corners read 599xxx, the TP-1 Easting must also start with 599 — never 539, never 579). (b) Use the tieBearing and tieBearingDistance to independently verify: compute the expected Easting offset = tieDistance × sin(tieBearing) and check that the TP-1 Easting ± that offset lands on Corner 1's Easting within a few metres. If it does not, the TP-1 Easting likely contains a 9→3 or 9→7 substitution — re-read it.
 - Normalize tieBearing exactly like "S87-03W": compass letter, degrees, hyphen, minutes, compass letter, no spaces, no degree symbols. Use "" if unreadable.
 ### 3. Validation protocol:
 - Return every text field in UPPERCASE, matching how these forms are actually typed (e.g. "MENDOZA GEMINA", "POBLACION PLACER MASBATE") — except tieBearing, which keeps its own compass-letter format (already uppercase by construction).
 - Use "" for text you cannot find, and null for numbers you cannot find. Never invent, infer, or "correct" a value that isn't legible — an empty field is better than a guessed one.
 - declaredArea, tieN, tieE, tieDistance are plain decimal numbers (no commas, no units, no letters).
 - Where a figure has been struck through and handwritten over (common for AREA), the handwritten correction is the final value — use it and say so briefly in "notes" (under 200 characters). If nothing is uncertain, "notes" can be "".
-- Cross-check digits that are easily confused in typewriter/carbon copies: 9/3 (the most common error on these forms — a 9 has a closed top loop, a 3 has two open bowls), 1/7, 3/8, 5/6, 0/8. If a digit is genuinely ambiguous, mention which field in "notes".`;
+- Cross-check digits that are easily confused in typewriter/carbon copies: 9/3 (a 9 has a closed top loop, a 3 has two open bowls), 9/7 (a 9 has a closed top loop with a curved or straight descender; a 7 has NO loop at all — just a flat top bar and a single diagonal stroke), 1/7, 3/8, 5/6, 0/8. These two — 9/3 and 9/7 — are the most common errors on these forms; treat them with equal suspicion. If a digit is genuinely ambiguous, mention which field in "notes".`;
 
 const CORNERS_PROMPT = `You are an expert geodetic engineer, cadastral data specialist, and optical character recognition (OCR) auditor reading the "LOT CORNER COORDINATES" and "LOT BOUNDARY LINE" columns of the corner table on a scanned Philippine Bureau of Lands "Lot Data Computation" form.
 Extract EVERY numbered corner row, in the exact order they appear top to bottom. Do NOT include the tie-point row (the one whose CORNER NO. reads "TP-1") — that row is handled separately.
@@ -546,7 +566,8 @@ Rules:
 - cornerDesc is the CORNER DESC. column text (e.g. "OLD COR", "PS MON"), or "" if blank.
 - Include a row for every corner even if some of its cells are unclear (use null/"" for those cells only) — never skip a whole row.
 - Keep the JSON compact (no extra whitespace) since the table can be long.
-CRITICAL DIGIT CHECK — 9 vs 3: on these faint typewriter carbon copies the digit "9" is very frequently misread as "3". Before finalizing each coordinate, re-examine every "3" you read: a 9 has ONE closed loop at the top with a straight tail; a 3 has TWO open right-facing bowls and no closed loop. Coordinates on one sheet cluster tightly (Northings within a few hundred meters of each other, likewise Eastings) — if a digit choice makes a value jump far from its neighbors (e.g. 1312332 among 1313xxx values), re-read it, since the 9 reading (1312932) is usually the correct one. This clustering sanity check applies to both Northing AND Easting: if all corner Eastings start with 599xxx, then any value starting with 539xxx almost certainly has a 9→3 substitution in the second digit. Also cross-check 1/7, 5/6, and 0/8 the same way.`;
+CRITICAL DIGIT CHECK — 9 vs 3 AND 9 vs 7: on these faint typewriter carbon copies the digit "9" is very frequently misread as either "3" or "7" — treat both with equal suspicion, not just 3. Before finalizing each coordinate, re-examine every "3" AND every "7" you read against this shape test: a 9 has ONE closed loop at the top with a tail below it; a 3 has TWO open right-facing bowls and no closed loop; a 7 has NO loop anywhere — just a flat top bar and a single diagonal stroke down. A faint or smudged 9 can lose its tail and look like a 7, or lose its loop's closure and look like a 3.
+Coordinates on one sheet cluster tightly (Northings within a few hundred meters of each other, likewise Eastings) — if a digit choice makes a value jump far from its neighbors (e.g. 1312332 among 1313xxx values, or 1312732 among 1313xxx values), re-read it: the 9 reading (1312932) is usually the correct one regardless of whether your first pass read a 3 or a 7 there. This clustering sanity check applies to both Northing AND Easting, and to EVERY row, not just the first one that looks off — a misread is often systematic across a whole column of a scan (the same digit position misread the same way on every row), not a one-off. If all corner Eastings start with 599xxx, then any value starting with 539xxx OR 579xxx almost certainly has a 9→3 or 9→7 substitution in the second digit — re-read that whole column against this rule, not just the outlier. Also cross-check 1/7, 5/6, and 0/8 the same way.`;
 
 function repairCornersJSON(raw) {
   const cleaned = stripFences(raw);
@@ -863,23 +884,30 @@ function CornerTable({ corners, setCorners, result, tiePoint, setTiePoint, onAdd
 
   const tieStatus = rowMatchStatus(tieLine, tiePoint);
 
-  // Detect likely 9→3 substitution in the TP-1 Easting: compare its leading prefix
-  // to the median of the corner Eastings. If the TP-1 Easting's thousands digit
-  // differs by ~60000 (i.e. 599xxx vs 539xxx) it almost certainly has the digit wrong.
-  const tpEastingWarn = useMemo(() => {
-    const te = Number(tiePoint?.e);
-    if (!Number.isFinite(te) || !corners.length) return null;
-    const cornerEastings = corners.map((c) => Number(c.e)).filter(Number.isFinite);
-    if (!cornerEastings.length) return null;
-    const medianE = cornerEastings.slice().sort((a, b) => a - b)[Math.floor(cornerEastings.length / 2)];
-    const diff = Math.abs(te - medianE);
-    // A 9→3 swap in the second digit (e.g. 599→539) shifts by ~60000; flag any diff > 5000
-    if (diff > 5000) {
-      const suggested = Math.round((te + diff) * 1000) / 1000; // most likely correct value
-      return `TP-1 EASTING (${te}) IS ${diff.toFixed(0)} M FROM THE CORNER EASTINGS (${medianE.toFixed(0)}). LIKELY 9→3 DIGIT MISREAD — SHOULD THIS BE ${suggested}?`;
-    }
-    return null;
-  }, [tiePoint?.e, corners]);
+  // Table-wide digit-misread guard: every row's Northing and Easting is checked
+  // against the rest of the table (leave-one-out median), not just TP-1. The
+  // video that motivated this (a lot where the AI misread "599xxx" as "579xxx"
+  // on TP-1 AND four separate corner rows) showed the failure isn't confined to
+  // the tie point — it can hit any row, and often hits several on the same scan.
+  const allNorthings = useMemo(
+    () => [Number(tiePoint?.n), ...corners.map((c) => Number(c.n))].filter(Number.isFinite),
+    [tiePoint?.n, corners]
+  );
+  const allEastings = useMemo(
+    () => [Number(tiePoint?.e), ...corners.map((c) => Number(c.e))].filter(Number.isFinite),
+    [tiePoint?.e, corners]
+  );
+  const cornerWarn = (row) => {
+    const n = Number(row?.n), e = Number(row?.e);
+    const nWarn = digitMisreadWarn(n, allNorthings.filter((v) => v !== n));
+    const eWarn = digitMisreadWarn(e, allEastings.filter((v) => v !== e));
+    return {
+      n: nWarn && `NORTHING (${n}) IS ${nWarn.diff.toFixed(0)} M FROM THE REST OF THE TABLE (~${nWarn.median.toFixed(0)}). LIKELY A DIGIT MISREAD (COMMONLY 9↔3 OR 9↔7) — SHOULD THIS BE ${nWarn.suggested}?`,
+      e: eWarn && `EASTING (${e}) IS ${eWarn.diff.toFixed(0)} M FROM THE REST OF THE TABLE (~${eWarn.median.toFixed(0)}). LIKELY A DIGIT MISREAD (COMMONLY 9↔3 OR 9↔7) — SHOULD THIS BE ${eWarn.suggested}?`,
+    };
+  };
+  const tpWarn = useMemo(() => cornerWarn(tiePoint), [tiePoint, allNorthings, allEastings]);
+  const tpEastingWarn = tpWarn.e; // kept for the existing TP-1 row JSX below
 
   return (
     <div>
@@ -931,16 +959,31 @@ function CornerTable({ corners, setCorners, result, tiePoint, setTiePoint, onAdd
             </tr>
             {corners.map((c, i) => {
               const status = rowMatchStatus(result?.lines?.[i], c);
+              const warn = cornerWarn(c);
               return (
                 <tr key={i} className="border-t border-stone-200 bg-white/60">
                   <td className="px-2 py-1.5 text-stone-500 font-mono">{i + 1}</td>
-                  <td className="px-1 py-1">
-                    <input value={c.n} onChange={(e) => update(i, 'n', e.target.value)} inputMode="decimal"
-                      className="w-28 font-mono text-xs text-stone-900 bg-transparent border-0 border-b border-transparent hover:border-stone-300 focus:border-amber-600 focus:outline-none py-0.5" />
+                  <td className="px-1 py-1 align-top">
+                    <div className="flex items-start gap-1">
+                      <input value={c.n} onChange={(e) => update(i, 'n', e.target.value)} inputMode="decimal"
+                        className={`w-28 font-mono text-xs text-stone-900 bg-transparent border-0 border-b focus:outline-none py-0.5 ${warn.n ? 'border-rose-500 text-rose-700 font-semibold' : 'border-transparent hover:border-stone-300 focus:border-amber-600'}`} />
+                      {warn.n && (
+                        <span title={warn.n} className="text-rose-600 cursor-help shrink-0 mt-0.5">
+                          <AlertTriangle size={12} />
+                        </span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-1 py-1">
-                    <input value={c.e} onChange={(e) => update(i, 'e', e.target.value)} inputMode="decimal"
-                      className="w-28 font-mono text-xs text-stone-900 bg-transparent border-0 border-b border-transparent hover:border-stone-300 focus:border-amber-600 focus:outline-none py-0.5" />
+                  <td className="px-1 py-1 align-top">
+                    <div className="flex items-start gap-1">
+                      <input value={c.e} onChange={(e) => update(i, 'e', e.target.value)} inputMode="decimal"
+                        className={`w-28 font-mono text-xs text-stone-900 bg-transparent border-0 border-b focus:outline-none py-0.5 ${warn.e ? 'border-rose-500 text-rose-700 font-semibold' : 'border-transparent hover:border-stone-300 focus:border-amber-600'}`} />
+                      {warn.e && (
+                        <span title={warn.e} className="text-rose-600 cursor-help shrink-0 mt-0.5">
+                          <AlertTriangle size={12} />
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-2 py-1 font-mono text-[11px] text-stone-600">{result?.lines?.[i] ? result.lines[i].bearingText : '—'}</td>
                   <td className="px-2 py-1 font-mono text-[11px] text-stone-600">{result?.lines?.[i] ? fmt(result.lines[i].M) : '—'}</td>
