@@ -233,7 +233,7 @@ const PH_ZONES = {
   'LUZON-IV': { label: 'Luzon 1911 / Philippines zone IV', epsg: 25394, cm: 123, shift: LUZON_SHIFT_A, hint: 'Bicol, Masbate, Cebu' },
   'LUZON-V': { label: 'Luzon 1911 / Philippines zone V', epsg: 25395, cm: 125, shift: LUZON_SHIFT_B, hint: 'E Mindanao, Samar, Bohol' },
 };
-const DEFAULT_ZONE = 'LUZON-IV';
+const DEFAULT_ZONE = 'PRS92-4';
 const TM_FE = 500000, TM_FN = 0, TM_K0 = 0.99995;
 
 function inverseTM(x, y, cmDeg, ellipsoid) {
