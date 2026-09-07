@@ -573,7 +573,8 @@ Respond with ONLY compact JSON, no markdown fences, no explanation, matching exa
 - Cross-check digits that are easily confused in typewriter/carbon copies: 9/3 (a 9 has a closed top loop, a 3 has two open bowls), 9/7 (a 9 has a closed top loop with a curved or straight descender; a 7 has NO loop at all — just a flat top bar and a single diagonal stroke), 1/7, 3/8, 5/6, 0/8. These two — 9/3 and 9/7 — are the most common errors on these forms; treat them with equal suspicion. If a digit is genuinely ambiguous, mention which field in "notes".`;
 
 const CORNERS_PROMPT = `You are an expert geodetic engineer, cadastral data specialist, and optical character recognition (OCR) auditor reading the "LOT CORNER COORDINATES" and "LOT BOUNDARY LINE" columns of the corner table on a scanned Philippine Bureau of Lands "Lot Data Computation" form.
-Extract EVERY numbered corner row, in the exact order they appear top to bottom. Do NOT include the tie-point row (the one whose CORNER NO. reads "TP-1") — that row is handled separately.
+Extract EVERY numbered corner row, in the exact order they appear top to bottom. Do NOT include the tie-point row (the one whose CORNER NO. reads "TP-1") — that row is handled separately, by a different extraction call.
+CRITICAL — DO NOT DUPLICATE TP-1 AS CORNER 1: the row directly ABOVE the row labeled "1" is virtually always "TP-1" (paired with "BLLM 1" or similar in the TRAVERSE STA. OCC. column, on the far left of the form) — this is the single most common mistake on this task, because TP-1's own coordinates then get emitted a second time as if they were corner 1's, which shifts every real corner down by one number in your output. Before emitting the first array entry, confirm its CORNER NO. cell literally reads "1", not "TP-1" — if the first coordinate row you see has "BLLM" or "TP-1" anywhere on its line, skip that entire row and start from the NEXT row down instead.
 STRICTLY extract only valid boundary corner points — rows whose CORNER NO. is a real sequential number (1, 2, 3, ...) in the LOT CORNER COORDINATES table. Completely IGNORE and do not emit a row for: the "AREA = ... SQ. M." total line below the last corner (including any struck-through or handwritten-correction figures near it), trailing survey notes, signature/date lines, or any other text below the table — none of these are corners, and none should ever be mistaken for a 5th, 6th, or any extra corner just because a number appears near them.
 Respond with ONLY compact JSON, no markdown fences, no explanation, matching exactly this shape:
 {"corners":[[cornerNo, northing, easting, "bearingText", distance, "cornerDesc"], ...]}
@@ -679,7 +680,24 @@ async function runExtraction(base64, mediaType) {
     }
   }
 
-  const corners = filterSpuriousCornerRows(cornersJson.corners || []).map((row) => ({
+  let cornerRows = filterSpuriousCornerRows(cornersJson.corners || []);
+  // Cross-check against the header call's OWN independent read of the tie point:
+  // if the first "corner" row sits within a few meters of TP-1 (BLLM 1), it's
+  // almost certainly TP-1 leaking into the corner list as a duplicate "corner 1"
+  // (the failure mode this whole check exists for), not a real boundary corner —
+  // genuine adjacent corners on these lots are dozens of meters apart at minimum.
+  // Using the header call's tieN/tieE (not the corners call's own guess) makes
+  // this a real independent check rather than just re-trusting the same read.
+  const tieN = Number(headerJson.tieN), tieE = Number(headerJson.tieE);
+  if (cornerRows.length > 0 && Number.isFinite(tieN) && Number.isFinite(tieE)) {
+    const [, n0, e0] = cornerRows[0];
+    const dn = Number(n0) - tieN, de = Number(e0) - tieE;
+    if (Number.isFinite(dn) && Number.isFinite(de) && Math.hypot(dn, de) < 10) {
+      cornerRows = cornerRows.slice(1);
+    }
+  }
+
+  const corners = cornerRows.map((row) => ({
     n: row[1] ?? '', e: row[2] ?? '', bearingText: row[3] || '', distance: row[4] ?? '', cornerDesc: row[5] || '', override: null,
   }));
 
